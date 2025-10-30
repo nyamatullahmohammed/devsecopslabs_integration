@@ -183,7 +183,6 @@ stage('OWASP ZAP Scan') {
         fi
         '''
     }
-    }
     post {
         always {
             archiveArtifacts artifacts: 'reports/zap_report.html', fingerprint: true
@@ -193,6 +192,7 @@ stage('OWASP ZAP Scan') {
         }
         failure {
             echo '❌ Build failed because high-severity issues were found in ZAP scan.'
+        }
         }
     }
 }
