@@ -79,7 +79,16 @@ pipeline {
                 }
             }
         }
-
+        stage('S5 - Quality Gate') {
+            steps {
+                script {
+                    timeout(time: 2, unit: 'MINUTES') {
+                        def qg = waitForQualityGate abortPipeline: true
+                        echo "Quality Gate status: ${qg.status}"
+                    }
+                }
+            }
+        }
       
 
         stage('S6 - Docker Build for Python App') {
