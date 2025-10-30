@@ -16,12 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps first (better layer caching)
-COPY python-app/requirements.txt /app/requirements.txt
+COPY python_app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 # Copy app code
-COPY python-app/ /app/
+COPY python_app/ /app/
 
 # Create non-root user
 RUN useradd -r -u 10001 appuser && chown -R appuser:appuser /app
