@@ -1,0 +1,158 @@
+pipeline {
+    agent { label 'nyamat-security-agent' }
+
+    triggers {
+        pollSCM('H/3 * * * *') // Poll every 3 mins (or use webhook)
+    }
+
+    environment {
+        DOCKERHUB_USER = 'nyamatullahmohammed'
+        IMAGE_NAME = 'jenkins-docker-lab'
+        SONARQUBE = 'SonarCloud'
+        SONAR_TOKEN = credentials('nyamat-sonarcloud-token')
+
+    }
+
+    stages {
+
+        stage('S1 - Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('S2 - Checkout SCM') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('S3 - GitLeaks Scan') {
+            steps {
+                sh '''#!/bin/bash
+                    set -eux
+                    if ! command -v gitleaks &> /dev/null; then
+                        wget https://github.com/zricethezav/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz
+                        tar -xzf gitleaks_8.18.1_linux_x64.tar.gz
+                        chmod +x gitleaks
+                        sudo mv gitleaks /usr/local/bin/
+                    fi
+
+                    exit_code=0
+                    if ! gitleaks detect --source . --no-git --verbose --report-path gitleaks-report.json; then
+                        exit_code=$?
+                    fi
+
+                    if [ "$exit_code" -ne 0 ]; then
+                        echo "❌ Gitleaks found leaks"
+                        exit 1
+                    else
+                        echo "✅ No leaks found"
+                    fi
+                '''
+            }
+        }
+
+        stage('S4 - SonarQube Analysis') {
+            steps {
+               withSonarQubeEnv(credentialsId: 'nyamat-sonarcloud-token', installationName: 'nyamat-sq') {
+                    sh '''#!/bin/bash
+                        set -eux
+                        export SONAR_SCANNER_VERSION=7.2.0.5079
+                        export SONAR_SCANNER_HOME=$HOME/.sonar/sonar-scanner-$SONAR_SCANNER_VERSION-linux-x64
+                        curl --create-dirs -sSLo $HOME/.sonar/sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-$SONAR_SCANNER_VERSION-linux-x64.zip
+                        unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
+                        export PATH=$SONAR_SCANNER_HOME/bin:$PATH
+
+                        sonar-scanner \
+                        -Dsonar.organization="nyamatullahmohammed" \
+                        -Dsonar.projectKey="nyamatullahmohammed_devsecopslabs_integration" \
+                        -Dsonar.host.url=https://sonarcloud.io \
+                        -Dsonar.sources=. \
+                        -Dsonar.python.coverage.reportPaths=coverage.xml \
+                        -Dsonar.c.file.suffixes=- \
+                        -Dsonar.cpp.file.suffixes=- \
+                        -Dsonar.objc.file.suffixes=- \
+                        -Dsonar.login=$SONAR_TOKEN \
+                        -Dsonar.exclusions=**/venv/**,**/__pycache__/**,**/tests/**
+                    '''
+                }
+            }
+        }
+
+        stage('S5 - Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('S6 - Docker Build for Python App') {
+            steps {
+                sh '''#!/bin/bash
+                    set -eux
+                    if [ ! -f python_app/Dockerfile ]; then
+                        echo "❌ Dockerfile not found in python_app directory"
+                        exit 1
+                    fi
+
+                    # Build from project root, using python_app/Dockerfile
+                    docker build -t $DOCKERHUB_USER/$IMAGE_NAME:latest -f python_app/Dockerfile .
+
+                    # Stop/remove existing container on port 8005 if any
+                    existing_container=$(docker ps -q --filter "publish=8005" || true)
+                    if [ -n "$existing_container" ]; then
+                        docker stop $existing_container || true
+                        docker rm $existing_container || true
+                    fi
+                '''
+            }
+        }
+
+
+        stage('S7 - Trivy Image Scan') {
+            steps {
+                sh '''#!/bin/bash
+                    set -eux
+                    if ! command -v trivy &> /dev/null; then
+                        echo "Installing Trivy..."
+                        sudo apt-get update -y
+                        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+                        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+                        echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/trivy.list
+                        sudo apt-get update -y
+                        sudo apt-get install -y trivy
+                    fi
+
+                    echo "Running Trivy scan..."
+                    trivy image --exit-code 0 --severity HIGH,CRITICAL $DOCKERHUB_USER/$IMAGE_NAME:latest
+                '''
+            }
+        }
+
+        stage('S8 - Deploy App Locally') {
+            when {
+                expression { currentBuild.currentResult == 'SUCCESS' }
+            }
+            steps {
+                sh '''#!/bin/bash
+                    set -eux
+                    echo "Deploying application locally..."
+                    docker ps -q --filter "publish=8005" | xargs -r docker rm -f || true
+                    docker run -d -p 8005:5000 --name python_app $DOCKERHUB_USER/$IMAGE_NAME:latest
+                    echo "✅ Application deployed and running locally on port 8005"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline completed and deployed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed.'
+        }
+    }
+}
