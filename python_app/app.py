@@ -1,5 +1,5 @@
 from flask import Flask, jsonify
-from redis_client import get_redis_client
+from python_app.redis_client import get_redis_client
 
 app = Flask(__name__)
 redis_client = get_redis_client()
