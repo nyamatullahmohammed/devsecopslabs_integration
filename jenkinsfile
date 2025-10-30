@@ -145,7 +145,6 @@ pipeline {
                 '''
             }
         }
-    }
 stage('OWASP ZAP Scan') {
     agent { label 'nyamat-ubuntu-a' }
     steps {
