@@ -146,13 +146,61 @@ pipeline {
             }
         }
     }
-
+stage('OWASP ZAP Scan') {
+    agent { label 'nyamat-ubuntu-a' }
+    steps {
+        sh '''#!/bin/bash
+        # Use Bash explicitly so "pipefail" works
+        set -euxo pipefail
+ 
+        TARGET_URL="http://98.94.4.136:8005"
+ 
+        echo "🔄 Waiting for app to start..."
+        for i in {1..10}; do
+            if curl -s --max-time 5 $TARGET_URL >/dev/null; then
+                echo "✅ App is up!"
+                break
+            fi
+            sleep 5
+        done
+ 
+        echo "🚀 Running OWASP ZAP Baseline Scan..."
+        # Run ZAP in Docker; ignore exit code (ZAP returns 2 for warnings)
+        docker run --rm -v $(pwd):/zap/wrk/:rw \
+            --network="host" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t $TARGET_URL -r zap_report.html || true
+ 
+        mkdir -p reports
+        mv zap_report.html reports/
+ 
+        echo "🔍 Checking ZAP results for FAIL-NEW entries..."
+        FAIL_COUNT=$(grep -oE "FAIL-NEW: [0-9]+" reports/zap_report.html | awk '{print $2}' || echo 0)
+ 
+        # If grep finds nothing, default to 0
+        if [ -z "$FAIL_COUNT" ]; then
+            FAIL_COUNT=0
+        fi
+ 
+        if [ "$FAIL_COUNT" -gt 0 ]; then
+            echo "❌ ZAP found $FAIL_COUNT high-severity vulnerabilities!"
+            exit 1
+        else
+            echo "✅ No high-severity vulnerabilities found. Build will continue."
+        fi
+        '''
+    }
+    }
+    } 
     post {
+        always {
+            archiveArtifacts artifacts: 'reports/zap_report.html', fingerprint: true
+        }
         success {
-            echo '✅ Pipeline completed and deployed successfully!'
+            echo '✅ ZAP scan completed successfully — only warnings or no issues.'
         }
         failure {
-            echo '❌ Pipeline failed.'
+            echo '❌ Build failed because high-severity issues were found in ZAP scan.'
         }
     }
 }
